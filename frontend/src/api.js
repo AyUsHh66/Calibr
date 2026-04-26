@@ -1,9 +1,11 @@
 const getApiBaseUrl = () => {
   let url = import.meta.env.VITE_API_URL || '';
   
-  // If we are in production and VITE_API_URL is missing, use the hardcoded Render URL
-  if (!url && import.meta.env.PROD) {
-    url = 'https://calibr-api.onrender.com';
+  // In production, we prefer using the relative path /api
+  // This allows the Vercel proxy (vercel.json) to handle the request
+  // which avoids CORS issues and is more robust.
+  if (import.meta.env.PROD && !url) {
+    return ''; // Relative path
   }
   
   // Fallback for local development if nothing is set

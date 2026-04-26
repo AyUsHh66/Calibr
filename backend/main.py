@@ -37,20 +37,25 @@ async def log_requests(request: Request, call_next):
 
 # CORS configuration
 raw_origins = settings.CORS_ORIGINS.split(",") if settings.CORS_ORIGINS else []
-origins = []
+origins = ["http://localhost:5173", "http://localhost:5174", "https://calibr-zeta.vercel.app"]
 for o in raw_origins:
     o = o.strip()
-    if o:
+    if o and o not in origins:
         origins.append(o)
-        if o.endswith("/"):
-            origins.append(o[:-1])
-        else:
-            origins.append(o + "/")
+
+# Add versions with and without trailing slashes
+final_origins = []
+for o in origins:
+    final_origins.append(o)
+    if o.endswith("/"):
+        final_origins.append(o[:-1])
+    else:
+        final_origins.append(o + "/")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins if origins else ["*"],
-    allow_credentials=True if origins else False,
+    allow_origins=final_origins if final_origins else ["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -78,6 +83,7 @@ async def api_root():
 @app.get("/api/health")
 async def health_check():
     import os
+    import time
     db_file_exists = False
     if "sqlite" in settings.DATABASE_URL:
         db_path = settings.DATABASE_URL.replace("sqlite:///", "")
@@ -85,10 +91,11 @@ async def health_check():
     
     return {
         "status": "healthy",
+        "time": time.time(),
         "database": settings.DATABASE_URL.split(":")[0],
         "db_file_exists": db_file_exists,
         "groq_configured": settings.GROQ_API_KEY != "gsk_...",
-        "cors_origins": origins
+        "cors_origins": final_origins
     }
 
 @app.on_event("startup")
