@@ -97,66 +97,73 @@ const LearningPlan = ({ sessionId, onBack }) => {
       )}
       
       <div className="plan-items">
-        {items.map((item, idx) => (
-          <div 
-            key={idx} 
-            className="plan-card animate-card-entrance"
-            style={{ animationDelay: `${idx * 150}ms` }}
-          >
-            <div className={`priority-accent p${item.priority}`}></div>
-            <div className="plan-card-header">
-              <div className="title-group">
-                <h3>{item.skill}</h3>
-                <span className={`priority-badge p${item.priority} animate-pop-in`}>P{item.priority}</span>
-              </div>
-              <div className="duration-chip">{item.time_weeks} Weeks</div>
-            </div>
-            
-            <div className="plan-card-body">
-              <div className="rationale-box">
-                <p>{item.why_adjacent}</p>
+        {(items || []).map((item, idx) => {
+          const weekByWeek = item.week_by_week || item.weekly_breakdown || item.weeks || [];
+          const resources = item.resources || item.resource_list || [];
+          const timeWeeks = item.time_weeks || item.time_estimate || item.duration || "2-4 weeks";
+          const whyAdjacent = item.why_adjacent || item.rationale || item.reason || "";
+          
+          return (
+            <div 
+              key={idx} 
+              className="plan-card animate-card-entrance"
+              style={{ animationDelay: `${idx * 150}ms` }}
+            >
+              <div className={`priority-accent p${item.priority}`}></div>
+              <div className="plan-card-header">
+                <div className="title-group">
+                  <h3>{item.skill}</h3>
+                  <span className={`priority-badge p${item.priority} animate-pop-in`}>P{item.priority}</span>
+                </div>
+                <div className="duration-chip">{timeWeeks} Weeks</div>
               </div>
               
-              <div className="timeline-container">
-                <div className="timeline-line"></div>
-                <div className="weeks-list">
-                  {item.week_by_week.map((week, i) => (
-                    <div key={i} className="week-node">
-                      <div className="node-circle"></div>
-                      <div className="week-content">
-                        <span className="week-label">Week {i + 1}</span>
-                        <p>{week}</p>
+              <div className="plan-card-body">
+                <div className="rationale-box">
+                  <p>{whyAdjacent}</p>
+                </div>
+                
+                <div className="timeline-container">
+                  <div className="timeline-line"></div>
+                  <div className="weeks-list">
+                    {(weekByWeek || []).map((week, i) => (
+                      <div key={i} className="week-node">
+                        <div className="node-circle"></div>
+                        <div className="week-content">
+                          <span className="week-label">Week {i + 1}</span>
+                          <p>{week}</p>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
-              </div>
-              
-              <div className="resources-container">
-                <h4>Top Resources</h4>
-                <div className="resource-chips">
-                  {item.resources.map((res, i) => (
-                    <a 
-                      key={i} 
-                      href={res.url} 
-                      target="_blank" 
-                      rel="noreferrer" 
-                      className={`resource-chip ${res.type.toLowerCase()}`}
-                    >
-                      <span className="res-icon">
-                        {res.type === 'COURSE' && '🎓'}
-                        {res.type === 'BOOK' && '📖'}
-                        {res.type === 'PROJECT' && '🛠️'}
-                        {res.type === 'DOC' && '📄'}
-                      </span>
-                      {res.title}
-                    </a>
-                  ))}
+                
+                <div className="resources-container">
+                  <h4>Top Resources</h4>
+                  <div className="resource-chips">
+                    {(resources || []).map((res, i) => (
+                      <a 
+                        key={i} 
+                        href={res.url} 
+                        target="_blank" 
+                        rel="noreferrer" 
+                        className={`resource-chip ${(res.type || 'DOC').toLowerCase()}`}
+                      >
+                        <span className="res-icon">
+                          {res.type === 'COURSE' && '🎓'}
+                          {res.type === 'BOOK' && '📖'}
+                          {res.type === 'PROJECT' && '🛠️'}
+                          {res.type === 'DOC' && '📄'}
+                        </span>
+                        {res.title}
+                      </a>
+                    ))}
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
       
       {!isGenerating && items.length > 0 && (

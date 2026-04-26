@@ -120,21 +120,17 @@ async def generate_learning_plan(
     
     OUTPUT FORMAT:
     Return a JSON object with a "plan" key containing a list of learning items.
-    Example:
+    Return a JSON array. Each item MUST have these exact fields:
     {{
-        "plan": [
-            {{
-                "skill": "React",
-                "milestone": "Mastering Hooks",
-                "reason": "Used in JD, but candidate struggled with useEffect during interview.",
-                "resources": [
-                    {{"title": "Epic React", "url": "...", "type": "course"}},
-                    {{"title": "Official Docs", "url": "...", "type": "docs"}}
-                ]
-            }}
-        ]
+      "skill": string,
+      "priority": number (1, 2, or 3),
+      "time_weeks": number,
+      "why_adjacent": string,
+      "week_by_week": array of strings like ["Week 1: Do X", "Week 2: Do Y"],
+      "resources": array of {{type, title, url, note}}
     }}
     
+    The week_by_week field is REQUIRED. Always include at least 2 weekly milestones. Never omit it.
     Only return JSON. No preamble.
     """
     
@@ -152,8 +148,21 @@ async def generate_learning_plan(
         )
         
         plan_data = json.loads(response.choices[0].message.content)
+        plan = plan_data.get("plan", [])
+        
+        # Post-processing: ensure required fields exist
+        for item in plan:
+            if 'week_by_week' not in item or not item['week_by_week']:
+                item['week_by_week'] = [
+                    f"Week 1-2: Learn {item.get('skill', 'this skill')} fundamentals",
+                    f"Week 3-4: Build a project using {item.get('skill', 'this skill')}",
+                    f"Week 5+: Apply to real work scenarios"
+                ]
+            if 'resources' not in item or not item['resources']:
+                item['resources'] = []
+                
         return {
-            "plan": plan_data.get("plan", []),
+            "plan": plan,
             "context": plan_context,
             "summary": summary
         }
