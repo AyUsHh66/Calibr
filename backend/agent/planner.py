@@ -1,11 +1,11 @@
 import json
-from groq import Groq
+from groq import AsyncGroq
 from typing import List, Dict
 from tavily import TavilyClient
 from models import Skill, SkillScore, LearningItem, LearningResource
 from config import settings
 
-client = Groq(api_key=settings.GROQ_API_KEY)
+client = AsyncGroq(api_key=settings.GROQ_API_KEY)
 tavily = TavilyClient(api_key=settings.TAVILY_API_KEY)
 
 def find_score(skill_name: str, scores: Dict[str, SkillScore]):
@@ -49,6 +49,9 @@ async def generate_learning_plan(
     """
     Generate the entire learning plan in a single API call after gathering search results using Groq.
     """
+    if not settings.GROQ_API_KEY or settings.GROQ_API_KEY == "gsk_...":
+        return {"plan": [], "context": "none", "summary": "Groq API Key not configured. Plan generation skipped."}
+
     # Always generate a plan - split skills into tiers 
     gap_skills = get_gap_skills(skills, scores)
     
@@ -98,82 +101,62 @@ async def generate_learning_plan(
         else:
             try:
                 search_result = tavily.search(query=search_query, search_depth="basic")
-            except Exception:
+            except:
                 search_result = {"results": []}
+
+        # Format context for Groq
+        skill_context = f"SKILL: {skill.skill}\nGAP: {score_data.gap if score_data else 'New skill'}\nLEVEL: {level_context}\nWEB RESULTS:\n"
+        for r in search_result.get("results", [])[:3]:
+            skill_context += f"- {r['title']} ({r['url']}): {r['content'][:150]}...\n"
         
-        all_search_context.append({
-            "skill": skill.skill,
-            "score": score_val,
-            "level_context": level_context,
-            "gap": score_data.gap if score_data else "No specific gap identified.",
-            "search_results": search_result['results'][:3]
-        })
+        all_search_context.append(skill_context)
 
-    # 2. Single call to Groq to generate the full plan
-    system_prompt = """
-    You are a personalized learning assistant. Create a comprehensive structured learning plan.
+    # 2. Final prompt for Groq to synthesize the plan
+    system_prompt = f"""
+    You are an AI Learning Mentor. Generate a personalized learning plan based on the candidate's assessment gaps.
     
-    PLAN CONTEXT: {{PLAN_CONTEXT}}
-    - senior_growth: focus on advanced courses, architecture patterns, open source contribution.
-    - intermediate: focus on specific gap-filling courses, hands-on projects.
-    - foundational: focus on beginner courses, basics, projects, documentation.
-
-    CANDIDATE CONTEXT:
-    Resume: {{RESUME}}...
+    OVERALL PLAN CONTEXT: {plan_context}
+    CANDIDATE RESUME SUMMARY: {resume[:500]}...
     
-    SKILLS AND CONTEXT:
-    {{GAPS_JSON}}
-    
-    GUIDELINES:
-    - For EACH skill, review the "level_context" provided in the JSON.
-    - If level_context indicates "complete beginner", start from absolute fundamentals.
-    - If "beginner", build on basics.
-    - If "intermediate", focus on specific advanced gaps.
-    - Provide a 4-week breakdown and curate 2-3 resources for each skill.
-    - Assume 1 hour of study per day.
-    - Output a JSON object with a "plan" key containing a list of LearningItems.
-    
-    OUTPUT SCHEMA:
-    {
+    OUTPUT FORMAT:
+    Return a JSON object with a "plan" key containing a list of learning items.
+    Example:
+    {{
         "plan": [
-            {
-                "skill": "string",
-                "priority": 1,
-                "time_weeks": 4,
-                "why_adjacent": "string",
-                "week_by_week": ["Week 1: ...", "Week 2: ...", "Week 3: ...", "Week 4: ..."],
+            {{
+                "skill": "React",
+                "milestone": "Mastering Hooks",
+                "reason": "Used in JD, but candidate struggled with useEffect during interview.",
                 "resources": [
-                    { "type": "course", "title": "string", "url": "string", "note": "string" }
+                    {{"title": "Epic React", "url": "...", "type": "course"}},
+                    {{"title": "Official Docs", "url": "...", "type": "docs"}}
                 ]
-            }
+            }}
         ]
-    }
+    }}
     
-    Only return the JSON object.
+    Only return JSON. No preamble.
     """
-    system_prompt = system_prompt.replace("{{PLAN_CONTEXT}}", plan_context)
-    system_prompt = system_prompt.replace("{{RESUME}}", resume[:500])
-    system_prompt = system_prompt.replace("{{GAPS_JSON}}", json.dumps(all_search_context))
-
+    
+    user_prompt = "GENERATE PLAN FROM THESE GAPS AND WEB RESOURCES:\n\n" + "\n---\n".join(all_search_context)
+    
     try:
-        response = client.chat.completions.create(
+        response = await client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": system_prompt}
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
             ],
-            temperature=0.2,
+            temperature=0,
             response_format={"type": "json_object"}
         )
-        content = response.choices[0].message.content
-        data = json.loads(content)
         
-        plan_data = data.get("plan", []) if isinstance(data, dict) else data
-        
+        plan_data = json.loads(response.choices[0].message.content)
         return {
-            "plan": plan_data,
+            "plan": plan_data.get("plan", []),
             "context": plan_context,
             "summary": summary
         }
     except Exception as e:
-        print(f"Error generating full learning plan with Groq: {e}")
-        return {"plan": [], "context": plan_context, "summary": summary}
+        print(f"Error generating learning plan with Groq: {e}")
+        return {"plan": [], "context": plan_context, "summary": f"Synthesis failed: {str(e)}"}

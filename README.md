@@ -143,8 +143,8 @@ Flags potentially ChatGPT-assisted answers:
 ```
 GROQ_API_KEY=gsk_your_key_here 
 TAVILY_API_KEY=tvly_your_key_here 
-DATABASE_URL=sqlite:///./data/skilllens.db 
-CORS_ORIGINS=http://localhost:5173 
+DATABASE_URL=sqlite:///./data/calibr.db 
+CORS_ORIGINS=http://localhost:5173,https://your-frontend-url.vercel.app
 ```
 
 --- 

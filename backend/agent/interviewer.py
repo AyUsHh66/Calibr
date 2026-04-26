@@ -1,10 +1,10 @@
 import json
-from groq import Groq
+from groq import AsyncGroq
 from typing import List, Optional
 from models import Skill
 from config import settings
 
-client = Groq(api_key=settings.GROQ_API_KEY)
+client = AsyncGroq(api_key=settings.GROQ_API_KEY)
 
 async def generate_questions_batch(
     skill: Skill,
@@ -14,6 +14,9 @@ async def generate_questions_batch(
     """
     Generate all questions for a skill in a single API call using Groq.
     """
+    if not settings.GROQ_API_KEY or settings.GROQ_API_KEY == "gsk_...":
+        return [f"Tell me about your experience with {skill.skill}."] * num_questions
+
     system_prompt = """
     You are an expert technical interviewer assessing the skill: "{{SKILL}}".
     JD Requirement: {{JD_REQ}}
@@ -39,7 +42,7 @@ async def generate_questions_batch(
     system_prompt = system_prompt.replace("{{NUM_QS}}", str(num_questions))
     
     try:
-        response = client.chat.completions.create(
+        response = await client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": system_prompt}
@@ -75,6 +78,9 @@ async def generate_question(
     """
     Legacy single-question generator using Groq.
     """
+    if not settings.GROQ_API_KEY or settings.GROQ_API_KEY == "gsk_...":
+        return f"Tell me about your experience with {skill.skill}."
+
     system_prompt = """
     You are an expert technical interviewer assessing the skill: "{{SKILL}}".
     JD Requirement for this skill: {{JD_REQ}}
@@ -100,12 +106,14 @@ async def generate_question(
     prompt = f"{system_prompt}\n\nCONVERSATION HISTORY:\n{history_str}\n\nGenerate the next question:"
     
     try:
-        response = client.chat.completions.create(
+        response = await client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
             temperature=0.7
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
         print(f"Error generating question with Groq: {e}")
-        return f"Could you tell me more about your experience with {skill.skill}?"
+        return f"Tell me about your experience with {skill.skill}."

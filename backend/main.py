@@ -25,17 +25,58 @@ app = FastAPI(
 )
 
 # CORS configuration
+raw_origins = settings.CORS_ORIGINS.split(",") if settings.CORS_ORIGINS else []
+origins = []
+for o in raw_origins:
+    o = o.strip()
+    if o:
+        origins.append(o)
+        if o.endswith("/"):
+            origins.append(o[:-1])
+        else:
+            origins.append(o + "/")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=origins if origins else ["*"],
+    allow_credentials=True if origins else False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+@app.get("/")
+async def root():
+    return {
+        "message": "Calibr API is running",
+        "docs": "/docs",
+        "health": "/api/health"
+    }
+
+@app.get("/api/health")
+async def health_check():
+    import os
+    db_file_exists = False
+    if "sqlite" in settings.DATABASE_URL:
+        db_path = settings.DATABASE_URL.replace("sqlite:///", "")
+        db_file_exists = os.path.exists(db_path)
+    
+    return {
+        "status": "healthy",
+        "database": settings.DATABASE_URL.split(":")[0],
+        "db_file_exists": db_file_exists,
+        "groq_configured": settings.GROQ_API_KEY != "gsk_...",
+        "cors_origins": origins
+    }
+
 @app.on_event("startup")
 def on_startup():
-    create_db_and_tables()
+    try:
+        print("Starting up: Creating database tables...")
+        create_db_and_tables()
+        print("Database tables ensured.")
+    except Exception as e:
+        print(f"Startup error: Failed to create database tables: {e}")
+        # We don't raise here to allow the app to start and show health check errors instead
 
 class SessionCreate(BaseModel):
     jd: str
@@ -85,11 +126,15 @@ async def create_session(data: SessionCreate, db: Session = Depends(get_session)
     """
     Creates a new assessment session, extracts skills from JD and Resume.
     """
+    print(f"Received create_session request. JD length: {len(data.jd)}, Resume length: {len(data.resume)}")
     try:
         # 1. Extract skills using Groq
+        print("Starting skill extraction...")
         skills = await extract_skills(data.jd, data.resume)
+        print(f"Successfully extracted {len(skills)} skills")
             
         # 2. Create session in DB
+        print("Creating session record in database...")
         new_session = SessionModel(
             jd=data.jd,
             resume=data.resume,
@@ -100,17 +145,20 @@ async def create_session(data: SessionCreate, db: Session = Depends(get_session)
         db.add(new_session)
         db.commit()
         db.refresh(new_session)
+        print(f"Session created with ID: {new_session.id}")
         
         return {
             "session_id": new_session.id,
             "skills": skills
         }
+    except ValueError as ve:
+        print(f"Validation error in create_session: {ve}")
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
-        db.rollback()
-        print(f"ERROR in create_session: {e}")
         import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        error_trace = traceback.format_exc()
+        print(f"Critical error in create_session: {e}\n{error_trace}")
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 @app.get("/api/sessions/{session_id}")
 async def get_session_details(session_id: str, db: Session = Depends(get_session)):
@@ -309,7 +357,7 @@ async def get_analysis(session_id: str, db: Session = Depends(get_session)):
     """
     
     try:
-        response = groq_client.chat.completions.create(
+        response = await groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=100,
@@ -508,7 +556,7 @@ async def compare_candidates(session_ids: str, db: Session = Depends(get_session
     
     from agent.scorer import client as groq_client
     try:
-        response = groq_client.chat.completions.create(
+        response = await groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=100,

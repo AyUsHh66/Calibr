@@ -9,13 +9,29 @@ const getApiBaseUrl = () => {
 export const API_BASE_URL = getApiBaseUrl();
 
 export const createSession = async (jd, resume) => {
-  const response = await fetch(`${API_BASE_URL}/api/sessions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jd, resume }),
-  });
-  if (!response.ok) throw new Error('Failed to create session');
-  return response.json();
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jd, resume }),
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      console.error('Session creation failed:', {
+        status: response.status,
+        statusText: response.statusText,
+        errorData
+      });
+      throw new Error(errorData.detail || `Failed to create session (Server Error ${response.status})`);
+    }
+    return response.json();
+  } catch (err) {
+    if (err.name === 'TypeError' && err.message === 'Failed to fetch') {
+      throw new Error('Network error: Cannot reach the backend. Check VITE_API_URL or CORS settings.');
+    }
+    throw err;
+  }
 };
 
 export const uploadFile = async (file) => {

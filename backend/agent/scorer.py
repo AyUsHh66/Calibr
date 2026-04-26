@@ -1,10 +1,10 @@
 import json
-from groq import Groq
+from groq import AsyncGroq
 from typing import List, Dict
 from models import Skill, SkillScore
 from config import settings
 
-client = Groq(api_key=settings.GROQ_API_KEY)
+client = AsyncGroq(api_key=settings.GROQ_API_KEY)
 
 async def score_all_skills(
     skills: List[Skill],
@@ -15,6 +15,17 @@ async def score_all_skills(
     Score all skills in a single batch call using Groq.
     Analyzes for AI-generated patterns and technical proficiency.
     """
+    if not settings.GROQ_API_KEY or settings.GROQ_API_KEY == "gsk_...":
+        return {s.skill: {
+            'score': 0, 
+            'level': 'Beginner', 
+            'strength': 'N/A', 
+            'gap': 'API Key not configured', 
+            'adjacent': False, 
+            'confidence_signal': 'hedging',
+            'ai_suspicion': 'low',
+            'suspicion_reason': ''
+        } for s in skills}
     system_prompt = """
     You are a technical assessment engine. Evaluate the candidate's proficiency in multiple skills based on the provided interview conversation.
     
@@ -61,7 +72,7 @@ async def score_all_skills(
     conv_str = "\n".join([f"{m['role'].upper()}: {m['content']}" for m in full_conversation_history])
     
     try:
-        response = client.chat.completions.create(
+        response = await client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -108,6 +119,11 @@ async def score_skill(
     """
     Legacy single-skill scorer using Groq.
     """
+    if not settings.GROQ_API_KEY or settings.GROQ_API_KEY == "gsk_...":
+        return SkillScore(
+            score=0, level="Beginner", strength="N/A", gap="API Key not configured", adjacent=False, confidence_signal="hedging"
+        )
+
     system_prompt = """
     Evaluate the candidate's proficiency in "{{SKILL}}".
     JD Requirement: {{JD_REQ}}
@@ -125,7 +141,7 @@ async def score_skill(
     conv_str = "\n".join([f"{m['role'].upper()}: {m['content']}" for m in conversation])
     
     try:
-        response = client.chat.completions.create(
+        response = await client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -143,10 +159,23 @@ async def score_skill(
             score=0, level="Beginner", strength="Error", gap=str(e), adjacent=False, confidence_signal="hedging"
         )
 
-def get_score_signal(score: SkillScore) -> str:
-    """Return "strong" if score >= 70, "weak" if score < 50, else "medium"."""
-    if score.score >= 70:
-        return "strong"
-    if score.score < 50:
+async def get_score_signal(skill: Skill, conversation_history: List[dict]) -> str:
+    """
+    Get a quick signal (strong/weak) to adjust difficulty.
+    """
+    if not settings.GROQ_API_KEY or settings.GROQ_API_KEY == "gsk_...":
         return "weak"
-    return "medium"
+
+    conv_str = "\n".join([f"{m['role'].upper()}: {m['content']}" for m in conversation_history])
+    prompt = f"Evaluate the LAST answer for {skill.skill}. Return only one word: 'strong' if proficient, 'weak' if struggling.\n\nCONVERSATION:\n{conv_str}"
+    
+    try:
+        response = await client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0
+        )
+        signal = response.choices[0].message.content.strip().lower()
+        return "strong" if "strong" in signal else "weak"
+    except:
+        return "weak"
