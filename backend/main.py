@@ -36,26 +36,10 @@ async def log_requests(request: Request, call_next):
     return response
 
 # CORS configuration
-raw_origins = settings.CORS_ORIGINS.split(",") if settings.CORS_ORIGINS else []
-origins = ["http://localhost:5173", "http://localhost:5174", "https://calibr-zeta.vercel.app"]
-for o in raw_origins:
-    o = o.strip()
-    if o and o not in origins:
-        origins.append(o)
-
-# Add versions with and without trailing slashes
-final_origins = []
-for o in origins:
-    final_origins.append(o)
-    if o.endswith("/"):
-        final_origins.append(o[:-1])
-    else:
-        final_origins.append(o + "/")
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=final_origins if final_origins else ["*"],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,  # Set to False when using allow_origins=["*"] for maximum compatibility
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -95,7 +79,7 @@ async def health_check():
         "database": settings.DATABASE_URL.split(":")[0],
         "db_file_exists": db_file_exists,
         "groq_configured": settings.GROQ_API_KEY != "gsk_...",
-        "cors_origins": final_origins
+        "cors_origins": ["*"]
     }
 
 @app.on_event("startup")
@@ -722,14 +706,14 @@ async def get_plan_pdf(session_id: str, db: Session = Depends(get_session)):
     return StreamingResponse(buffer, media_type="application/pdf", headers={"Content-Disposition": f"attachment; filename=calibr_plan_{session_id}.pdf"})
 
 # Catch-all for undefined /api routes to help debug 404s
-@app.api_route("/api/{path_name:path}", methods=["GET", "POST", "PUT", "DELETE"])
-async def catch_all_api(request: Request, path_name: str):
-    print(f"DEBUG: 404 Attempted access to undefined route: {request.method} {request.url.path}")
-    return Response(
-        content=json.dumps({"detail": f"Route {request.url.path} not found on this server"}),
-        status_code=404,
-        media_type="application/json"
-    )
+# @app.api_route("/api/{path_name:path}", methods=["GET", "POST", "PUT", "DELETE"])
+# async def catch_all_api(request: Request, path_name: str):
+#     print(f"DEBUG: 404 Attempted access to undefined route: {request.method} {request.url.path}")
+#     return Response(
+#         content=json.dumps({"detail": f"Route {request.url.path} not found on this server"}),
+#         status_code=404,
+#         media_type="application/json"
+#     )
 
 class LearningResource(BaseModel):
     title: str

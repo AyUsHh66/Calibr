@@ -1,19 +1,16 @@
 const getApiBaseUrl = () => {
   let url = import.meta.env.VITE_API_URL || '';
   
-  // In production, we prefer using the relative path /api
-  // This allows the Vercel proxy (vercel.json) to handle the request
-  // which avoids CORS issues and is more robust.
-  if (import.meta.env.PROD && !url) {
-    return ''; // Relative path
+  // Use hardcoded Render URL in production to bypass proxy issues
+  if (!url && import.meta.env.PROD) {
+    url = 'https://calibr-api.onrender.com';
   }
   
-  // Fallback for local development if nothing is set
+  // Fallback for local development
   if (!url) {
-    url = ''; // Will use relative paths, which Vite proxy handles in dev
+    url = ''; 
   }
 
-  // Remove trailing slash if it exists
   if (url.endsWith('/')) {
     url = url.slice(0, -1);
   }
