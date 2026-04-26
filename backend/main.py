@@ -27,22 +27,23 @@ app = FastAPI(
     description="AI-powered skill assessment and learning roadmap generator",
 )
 
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    start_time = time.time()
-    response = await call_next(request)
-    process_time = (time.time() - start_time) * 1000
-    print(f"DEBUG: {request.method} {request.url.path} - Status: {response.status_code} - {process_time:.2f}ms")
-    return response
-
-# CORS configuration
+# 1. Explicit CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,  # Set to False when using allow_origins=["*"] for maximum compatibility
-    allow_methods=["*"],
+    allow_origins=["https://calibr-zeta.vercel.app", "http://localhost:5174", "*"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"]
 )
+
+# 2. Add OPTIONS handler for preflight requests
+@app.options("/{rest_of_path:path}")
+async def preflight_handler(rest_of_path: str):
+    return {"status": "ok"}
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
 
 @app.get("/")
 async def root():
@@ -93,7 +94,7 @@ def on_startup():
         print(f"Startup error: Failed to create database tables: {e}")
         # We don't raise here to allow the app to start and show health check errors instead
 
-class SessionCreate(BaseModel):
+class SessionRequest(BaseModel):
     jd: str
     resume: str
 
@@ -137,7 +138,7 @@ async def upload_file(file: UploadFile = File(...)):
         return {"success": False, "error": f"Unexpected error: {str(e)}"}
 
 @app.post("/api/sessions")
-async def create_session(data: SessionCreate, db: Session = Depends(get_session)):
+async def create_session(data: SessionRequest, db: Session = Depends(get_session)):
     """
     Creates a new assessment session, extracts skills from JD and Resume.
     """
@@ -395,95 +396,99 @@ async def get_recruiter_candidates(db: Session = Depends(get_session)):
     """
     Returns a list of all candidates who have completed their assessment.
     """
-    statement = select(SessionModel).where(SessionModel.status == "complete")
-    results = db.exec(statement).all()
-    
-    candidates = []
-    for session in results:
-        # Parse candidate name (first line of resume)
-        resume_lines = session.resume.strip().split('\n')
-        candidate_name = resume_lines[0] if resume_lines else "Unknown Candidate"
+    try:
+        statement = select(SessionModel).where(SessionModel.status == "complete")
+        results = db.exec(statement).all()
         
-        scores = json.loads(session.scores) if session.scores else {}
-        skills = [Skill(**s) for s in json.loads(session.skills)]
-        
-        # Calculate scores and metrics
-        weights = {"critical": 3, "important": 2, "nice-to-have": 1}
-        total_weighted_score = 0
-        total_weight = 0
-        overall_score_sum = 0
-        
-        # Top Gap: lowest scoring critical skill
-        critical_skills_scores = []
-        
-        # Confidence avg: most common confidence signal
-        confidence_signals = []
-        ai_suspicions = []
-        
-        skills_summary = []
-        
-        for skill_obj in skills:
-            skill_name = skill_obj.skill
-            weight = weights.get(skill_obj.importance, 1)
-            score_data = scores.get(skill_name, {})
-            score_val = score_data.get("score", 0)
-            conf_signal = score_data.get("confidence_signal", "genuine")
-            ai_suspicion = score_data.get("ai_suspicion", "low")
+        candidates = []
+        for session in results:
+            # Parse candidate name (first line of resume)
+            resume_lines = session.resume.strip().split('\n')
+            candidate_name = resume_lines[0] if resume_lines else "Unknown Candidate"
             
-            total_weighted_score += score_val * weight
-            total_weight += weight
-            overall_score_sum += score_val
+            scores = json.loads(session.scores) if session.scores else {}
+            skills = [Skill(**s) for s in json.loads(session.skills)]
             
-            if skill_obj.importance == "critical":
-                critical_skills_scores.append((skill_name, score_val))
+            # Calculate scores and metrics
+            weights = {"critical": 3, "important": 2, "nice-to-have": 1}
+            total_weighted_score = 0
+            total_weight = 0
+            overall_score_sum = 0
             
-            confidence_signals.append(conf_signal)
-            ai_suspicions.append(ai_suspicion)
-            skills_summary.append({
-                "skill": skill_name,
-                "score": score_val,
-                "confidence_signal": conf_signal,
-                "ai_suspicion": ai_suspicion
+            # Top Gap: lowest scoring critical skill
+            critical_skills_scores = []
+            
+            # Confidence avg: most common confidence signal
+            confidence_signals = []
+            ai_suspicions = []
+            
+            skills_summary = []
+            
+            for skill_obj in skills:
+                skill_name = skill_obj.skill
+                weight = weights.get(skill_obj.importance, 1)
+                score_data = scores.get(skill_name, {})
+                score_val = score_data.get("score", 0)
+                conf_signal = score_data.get("confidence_signal", "genuine")
+                ai_suspicion = score_data.get("ai_suspicion", "low")
+                
+                total_weighted_score += score_val * weight
+                total_weight += weight
+                overall_score_sum += score_val
+                
+                if skill_obj.importance == "critical":
+                    critical_skills_scores.append((skill_name, score_val))
+                
+                confidence_signals.append(conf_signal)
+                ai_suspicions.append(ai_suspicion)
+                skills_summary.append({
+                    "skill": skill_name,
+                    "score": score_val,
+                    "confidence_signal": conf_signal,
+                    "ai_suspicion": ai_suspicion
+                })
+                
+            # Calculate overall suspicion
+            if "high" in ai_suspicions:
+                overall_suspicion = "high"
+            elif "medium" in ai_suspicions:
+                overall_suspicion = "medium"
+            else:
+                overall_suspicion = "low"
+
+            jd_match_score = int(total_weighted_score / total_weight) if total_weight > 0 else 0
+            overall_score = int(overall_score_sum / len(skills)) if skills else 0
+            
+            # Find top gap
+            top_gap = "None"
+            if critical_skills_scores:
+                critical_skills_scores.sort(key=lambda x: x[1])
+                top_gap = critical_skills_scores[0][0]
+                
+            # Find most common confidence signal
+            from collections import Counter
+            conf_counts = Counter(confidence_signals)
+            confidence_avg = conf_counts.most_common(1)[0][0] if confidence_signals else "genuine"
+            
+            candidates.append({
+                "session_id": session.id,
+                "candidate_name": candidate_name,
+                "overall_score": overall_score,
+                "jd_match_score": jd_match_score,
+                "top_gap": top_gap,
+                "confidence_avg": confidence_avg,
+                "ai_suspicion": overall_suspicion,
+                "assessed_at": session.created_at.isoformat(),
+                "skills_summary": skills_summary
             })
             
-        # Calculate overall suspicion
-        if "high" in ai_suspicions:
-            overall_suspicion = "high"
-        elif "medium" in ai_suspicions:
-            overall_suspicion = "medium"
-        else:
-            overall_suspicion = "low"
-
-        jd_match_score = int(total_weighted_score / total_weight) if total_weight > 0 else 0
-        overall_score = int(overall_score_sum / len(skills)) if skills else 0
+        # Sort by JD match score descending by default
+        candidates.sort(key=lambda x: x["jd_match_score"], reverse=True)
         
-        # Find top gap
-        top_gap = "None"
-        if critical_skills_scores:
-            critical_skills_scores.sort(key=lambda x: x[1])
-            top_gap = critical_skills_scores[0][0]
-            
-        # Find most common confidence signal
-        from collections import Counter
-        conf_counts = Counter(confidence_signals)
-        confidence_avg = conf_counts.most_common(1)[0][0] if confidence_signals else "genuine"
-        
-        candidates.append({
-            "session_id": session.id,
-            "candidate_name": candidate_name,
-            "overall_score": overall_score,
-            "jd_match_score": jd_match_score,
-            "top_gap": top_gap,
-            "confidence_avg": confidence_avg,
-            "ai_suspicion": overall_suspicion,
-            "assessed_at": session.created_at.isoformat(),
-            "skills_summary": skills_summary
-        })
-        
-    # Sort by JD match score descending by default
-    candidates.sort(key=lambda x: x["jd_match_score"], reverse=True)
-    
-    return candidates
+        return candidates
+    except Exception as e:
+        print(f"Recruiter endpoint error: {e}")
+        return []
 
 @app.get("/api/recruiter/compare")
 async def compare_candidates(session_ids: str, db: Session = Depends(get_session)):
