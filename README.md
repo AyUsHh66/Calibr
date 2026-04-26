@@ -1,5 +1,19 @@
 # Calibr ◈ AI Skill Assessment Agent 
 
+## Running Locally (Judges) 
+
+### Prerequisites 
+- Docker Desktop installed and running 
+- Groq API key (free): console.groq.com 
+- Tavily API key (free): app.tavily.com 
+
+### Setup (3 steps) 
+1. cp backend/.env.example backend/.env 
+2. Add your GROQ_API_KEY and TAVILY_API_KEY to backend/.env 
+3. docker-compose up --build 
+
+Open http://localhost:5173
+
 [**Live Demo**](https://calibr-ai.vercel.app) | [**GitHub Repo**](https://github.com/AyUsHh66/Calibr)
 
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.111-009688?style=flat&logo=fastapi)](https://fastapi.tiangolo.com) 
