@@ -1,9 +1,9 @@
 const getApiBaseUrl = () => {
   let url = import.meta.env.VITE_API_URL || '';
   
-  // Use hardcoded Render URL in production to bypass proxy issues
+  // Use hardcoded Railway URL in production to bypass proxy issues
   if (!url && import.meta.env.PROD) {
-    url = 'https://calibr-api.onrender.com';
+    url = 'https://calibr-production-a797.up.railway.app';
   }
   
   // Fallback for local development
