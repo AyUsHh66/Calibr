@@ -47,8 +47,11 @@ async def preflight_handler(rest_of_path: str):
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-
-@app.get("/")
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = time.time() - start_time
+    response.headers["X-Process-Time"] = str(process_time)
+    return response
 async def root():
     return {
         "message": "Calibr API is running",
