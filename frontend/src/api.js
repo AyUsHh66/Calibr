@@ -1,5 +1,16 @@
 const getApiBaseUrl = () => {
   let url = import.meta.env.VITE_API_URL || '';
+  
+  // If we are in production and VITE_API_URL is missing, use the hardcoded Render URL
+  if (!url && import.meta.env.PROD) {
+    url = 'https://calibr-api.onrender.com';
+  }
+  
+  // Fallback for local development if nothing is set
+  if (!url) {
+    url = ''; // Will use relative paths, which Vite proxy handles in dev
+  }
+
   // Remove trailing slash if it exists
   if (url.endsWith('/')) {
     url = url.slice(0, -1);

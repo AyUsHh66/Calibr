@@ -63,6 +63,18 @@ async def root():
         "health": "/api/health"
     }
 
+@app.get("/api")
+async def api_root():
+    return {
+        "message": "Calibr API v1",
+        "health": "/api/health",
+        "endpoints": [
+            "/api/sessions",
+            "/api/upload",
+            "/api/recruiter/candidates"
+        ]
+    }
+
 @app.get("/api/health")
 async def health_check():
     import os
@@ -78,6 +90,16 @@ async def health_check():
         "groq_configured": settings.GROQ_API_KEY != "gsk_...",
         "cors_origins": origins
     }
+
+# Catch-all for undefined /api routes to help debug 404s
+@app.api_route("/api/{path_name:path}", methods=["GET", "POST", "PUT", "DELETE"])
+async def catch_all_api(request: Request, path_name: str):
+    print(f"DEBUG: 404 Attempted access to undefined route: {request.method} /api/{path_name}")
+    return Response(
+        content=json.dumps({"detail": f"Route /api/{path_name} not found on this server"}),
+        status_code=404,
+        media_type="application/json"
+    )
 
 @app.on_event("startup")
 def on_startup():
@@ -582,6 +604,7 @@ async def compare_candidates(session_ids: str, db: Session = Depends(get_session
         "all_skills": sorted(list(all_skills_set)),
         "verdict": verdict
     }
+@app.get("/api/sessions/{session_id}/plan")
 async def get_learning_plan(session_id: str, db: Session = Depends(get_session)):
     session = db.get(SessionModel, session_id)
     if not session:
@@ -603,6 +626,16 @@ async def get_learning_plan(session_id: str, db: Session = Depends(get_session))
         yield "data: {\"type\": \"done\"}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+# Catch-all for undefined /api routes to help debug 404s
+@app.api_route("/api/{path_name:path}", methods=["GET", "POST", "PUT", "DELETE"])
+async def catch_all_api(request: Request, path_name: str):
+    print(f"DEBUG: 404 Attempted access to undefined route: {request.method} /api/{path_name}")
+    return Response(
+        content=json.dumps({"detail": f"Route /api/{path_name} not found on this server"}),
+        status_code=404,
+        media_type="application/json"
+    )
 
 @app.get("/api/sessions/{session_id}/plan/pdf")
 async def get_plan_pdf(session_id: str, db: Session = Depends(get_session)):
@@ -682,20 +715,18 @@ async def get_plan_pdf(session_id: str, db: Session = Depends(get_session)):
             p.showPage()
             y = height - 50
 
-    # p.save() # Remove or comment out the extra p.save() if it exists twice
     p.save()
-
     buffer.seek(0)
-    pdf_content = buffer.getvalue()
-    buffer.close()
-    
+    return StreamingResponse(buffer, media_type="application/pdf", headers={"Content-Disposition": f"attachment; filename=calibr_plan_{session_id}.pdf"})
+
+# Catch-all for undefined /api routes to help debug 404s
+@app.api_route("/api/{path_name:path}", methods=["GET", "POST", "PUT", "DELETE"])
+async def catch_all_api(request: Request, path_name: str):
+    print(f"DEBUG: 404 Attempted access to undefined route: {request.method} {request.url.path}")
     return Response(
-        content=pdf_content, 
-        media_type="application/pdf", 
-        headers={
-            "Content-Disposition": f"attachment; filename=learning_plan_{session_id}.pdf",
-            "Access-Control-Expose-Headers": "Content-Disposition"
-        }
+        content=json.dumps({"detail": f"Route {request.url.path} not found on this server"}),
+        status_code=404,
+        media_type="application/json"
     )
 
 if __name__ == "__main__":
