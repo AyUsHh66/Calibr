@@ -708,8 +708,18 @@ async def get_plan_pdf(session_id: str, db: Session = Depends(get_session)):
             y = height - 50
 
     p.save()
-    buffer.seek(0)
-    return StreamingResponse(buffer, media_type="application/pdf", headers={"Content-Disposition": f"attachment; filename=calibr_plan_{session_id}.pdf"})
+    pdf_bytes = buffer.getvalue()
+    buffer.close()
+    
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename=calibr-report-{session_id[:8]}.pdf",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Expose-Headers": "Content-Disposition"
+        }
+    )
 
 # Catch-all for undefined /api routes to help debug 404s
 # @app.api_route("/api/{path_name:path}", methods=["GET", "POST", "PUT", "DELETE"])

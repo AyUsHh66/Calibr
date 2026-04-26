@@ -4,6 +4,7 @@ import { API_BASE_URL } from '../api';
 const LearningPlan = ({ sessionId, onBack }) => {
   const [items, setItems] = useState([]);
   const [isGenerating, setIsGenerating] = useState(true);
+  const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState('');
   const [planContext, setPlanContext] = useState('');
   const [summary, setSummary] = useState('');
@@ -48,21 +49,33 @@ const LearningPlan = ({ sessionId, onBack }) => {
 
   const handleDownloadPDF = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/plan/pdf`);
-      if (!response.ok) throw new Error('Failed to download PDF');
+      setDownloading(true);
+      const response = await fetch(
+        `${API_BASE_URL}/api/sessions/${sessionId}/plan/pdf`,
+        {
+          method: 'GET',
+          headers: {
+            'Accept': 'application/pdf'
+          }
+        }
+      );
+      
+      if (!response.ok) throw new Error('PDF generation failed');
       
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', `learning_plan_${sessionId}.pdf`);
+      link.download = `calibr-report-${sessionId.slice(0, 8)}.pdf`;
       document.body.appendChild(link);
       link.click();
-      link.parentNode.removeChild(link);
+      document.body.removeChild(link);
       window.URL.revokeObjectURL(url);
     } catch (err) {
       console.error("PDF download error:", err);
-      alert("Failed to download PDF. Please try again.");
+      setError("Failed to download PDF. Please try again.");
+    } finally {
+      setDownloading(false);
     }
   };
 
@@ -182,8 +195,13 @@ const LearningPlan = ({ sessionId, onBack }) => {
           ← Back to Analysis
         </button>
         {!isGenerating && items.length > 0 && (
-          <button className="primary-btn pdf-btn" onClick={handleDownloadPDF}>
-            <span className="icon">↓</span> Download PDF Roadmap
+          <button 
+            className="primary-btn pdf-btn" 
+            onClick={handleDownloadPDF}
+            disabled={downloading}
+          >
+            <span className="icon">↓</span> 
+            {downloading ? 'Generating PDF...' : 'Download PDF Report'}
           </button>
         )}
       </div>
