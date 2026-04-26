@@ -80,6 +80,7 @@ async def health_check():
     
     return {
         "status": "healthy",
+        "version": "1.0.1-pdf-debug",
         "time": time.time(),
         "database": settings.DATABASE_URL.split(":")[0],
         "db_file_exists": db_file_exists,
