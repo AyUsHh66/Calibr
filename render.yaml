@@ -1,17 +1,28 @@
-services: 
-  - type: web 
-    name: calibr-api 
-    runtime: python 
-    rootDir: backend 
-    buildCommand: pip install -r requirements.txt 
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT 
-    envVars: 
-      - key: GROQ_API_KEY 
-        sync: false 
-      - key: TAVILY_API_KEY 
-        sync: false 
-      - key: DATABASE_URL 
-        value: sqlite:///./calibr.db 
-      - key: CORS_ORIGINS 
-        value: https://calibr-zeta.vercel.app 
+services:
+  # Backend Service
+  - type: web
+    name: calibr-api
+    runtime: docker
+    dockerContext: .
+    dockerfilePath: backend/Dockerfile
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        value: sqlite:///./data/calibr.db
+      - key: CORS_ORIGINS
+        value: https://calibr-zeta.vercel.app
     healthCheckPath: /health
+
+  # Frontend Service (Optional, if you want to host both on Render)
+  - type: web
+    name: calibr-frontend
+    runtime: docker
+    dockerContext: .
+    dockerfilePath: frontend/Dockerfile
+    envVars:
+      - key: VITE_API_URL
+        value: https://calibr-api.onrender.com
+
