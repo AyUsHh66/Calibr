@@ -1,0 +1,644 @@
+import json
+from fastapi import FastAPI, Depends, HTTPException, File, UploadFile, Form
+from utils.pdf_extractor import extract_text_from_pdf
+import io
+from fastapi.middleware.cors import CORSMiddleware
+from sqlmodel import Session, select
+from db import engine, get_session, create_db_and_tables
+from models import Session as SessionModel, Skill, SkillScore
+from config import settings
+from agent.extractor import extract_skills
+from agent.interviewer import generate_question, generate_questions_batch
+from agent.scorer import score_skill, get_score_signal, score_all_skills
+from agent.planner import generate_learning_plan
+from pydantic import BaseModel
+from typing import Optional, List
+from fastapi.responses import StreamingResponse, Response
+import asyncio
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+from io import BytesIO
+
+app = FastAPI(
+    title="Calibr API",
+    description="AI-powered skill assessment and learning roadmap generator",
+)
+
+# CORS configuration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.on_event("startup")
+def on_startup():
+    create_db_and_tables()
+
+class SessionCreate(BaseModel):
+    jd: str
+    resume: str
+
+@app.post("/api/upload") 
+async def upload_file(file: UploadFile = File(...)): 
+    """Handle PDF and TXT file uploads, return extracted text.""" 
+    try: 
+        content = await file.read() 
+        
+        filename = file.filename.lower() 
+        
+        if filename.endswith(".pdf"): 
+            text = extract_text_from_pdf(content) 
+            
+        elif filename.endswith(".txt"): 
+            text = content.decode("utf-8", errors="ignore") 
+            
+        elif filename.endswith(".docx"): 
+            # Handle docx with python-docx 
+            import docx 
+            import io 
+            doc = docx.Document(io.BytesIO(content)) 
+            text = "\n".join([para.text for para in doc.paragraphs if para.text.strip()]) 
+            
+        else: 
+            raise ValueError("Unsupported file type. Please upload PDF, TXT, or DOCX.") 
+        
+        if len(text.strip()) < 50: 
+            raise ValueError("File appears empty or has too little text to analyse.") 
+            
+        return { 
+            "success": True, 
+            "text": text, 
+            "filename": file.filename, 
+            "char_count": len(text) 
+        } 
+        
+    except ValueError as e: 
+        return {"success": False, "error": str(e)} 
+    except Exception as e: 
+        return {"success": False, "error": f"Unexpected error: {str(e)}"}
+
+@app.post("/api/sessions")
+async def create_session(data: SessionCreate, db: Session = Depends(get_session)):
+    """
+    Creates a new assessment session, extracts skills from JD and Resume.
+    """
+    try:
+        # 1. Extract skills using Groq
+        skills = await extract_skills(data.jd, data.resume)
+            
+        # 2. Create session in DB
+        new_session = SessionModel(
+            jd=data.jd,
+            resume=data.resume,
+            skills=json.dumps([s.model_dump() for s in skills]),
+            status="assessing"
+        )
+        
+        db.add(new_session)
+        db.commit()
+        db.refresh(new_session)
+        
+        return {
+            "session_id": new_session.id,
+            "skills": skills
+        }
+    except Exception as e:
+        db.rollback()
+        print(f"ERROR in create_session: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/sessions/{session_id}")
+async def get_session_details(session_id: str, db: Session = Depends(get_session)):
+    session = db.get(SessionModel, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    return {
+        "id": session.id,
+        "status": session.status,
+        "current_skill_index": session.current_skill_index,
+        "current_question_number": session.current_question_number,
+        "skills": json.loads(session.skills),
+        "scores": json.loads(session.scores) if session.scores else {},
+        "chat_history": json.loads(session.chat_history) if session.chat_history else [],
+        "created_at": session.created_at
+    }
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: str, db: Session = Depends(get_session)):
+    session = db.get(SessionModel, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    db.delete(session)
+    db.commit()
+    return {"message": "Session deleted"}
+
+@app.get("/api/sessions/{session_id}/question")
+async def get_question(
+    session_id: str, 
+    skill_index: int, 
+    question_number: int,
+    db: Session = Depends(get_session)
+):
+    session = db.get(SessionModel, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    skills_data = json.loads(session.skills)
+    if skill_index >= len(skills_data):
+        raise HTTPException(status_code=400, detail="Invalid skill index")
+    
+    skill = Skill(**skills_data[skill_index])
+    
+    # Check if we have cached questions for this skill
+    cache = json.loads(session.questions_cache) if session.questions_cache else {}
+    skill_questions = cache.get(skill.skill, [])
+    
+    if not skill_questions:
+        # Generate all questions for this skill upfront
+        skill_questions = await generate_questions_batch(
+            skill=skill,
+            resume_context=session.resume,
+            num_questions=2
+        )
+        # Update cache in DB
+        cache[skill.skill] = skill_questions
+        session.questions_cache = json.dumps(cache)
+        db.add(session)
+        db.commit()
+    
+    # Return the requested question from cache
+    if question_number <= len(skill_questions):
+        question = skill_questions[question_number - 1]
+        
+        # Sync assistant question to chat_history if it's not already there
+        current_history = json.loads(session.chat_history) if session.chat_history else []
+        # Simple check to avoid duplicate assistant messages in history if refreshed
+        if not current_history or current_history[-1].get("content") != question:
+            current_history.append({"role": "assistant", "content": question, "skill": skill.skill})
+            session.chat_history = json.dumps(current_history)
+            db.add(session)
+            db.commit()
+            
+        return {"question": question}
+    
+    return {"question": f"Could you tell me more about your experience with {skill.skill}?"}
+
+class AnswerSubmit(BaseModel):
+    skill_index: int
+    question_number: int
+    answer: str
+    conversation_history: List[dict] # Frontend tracks the current skill's conversation
+    response_time: Optional[float] = None
+
+@app.post("/api/sessions/{session_id}/answer")
+async def submit_answer(
+    session_id: str,
+    data: AnswerSubmit,
+    db: Session = Depends(get_session)
+):
+    session = db.get(SessionModel, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    skills_data = json.loads(session.skills)
+    skill = Skill(**skills_data[data.skill_index])
+    
+    # Update chat history with metadata
+    user_msg = {"role": "user", "content": data.answer, "skill": skill.skill}
+    if data.response_time is not None:
+        user_msg["response_time"] = data.response_time
+
+    full_history = data.conversation_history + [user_msg]
+    session.chat_history = json.dumps(full_history)
+    
+    # If this is the last question for this skill (assuming 2 per skill as per spec)
+    if data.question_number >= 2:
+        # Check if all skills are done
+        if data.skill_index >= len(skills_data) - 1:
+            # ALL SKILLS DONE - Batch Score Everything Now
+            session.status = "complete"
+            
+            all_skills = [Skill(**s) for s in skills_data]
+            # Extract metadata for scoring
+            response_metadata = [
+                {"content": m["content"], "response_time": m.get("response_time")} 
+                for m in full_history if m["role"] == "user"
+            ]
+            
+            all_scores = await score_all_skills(all_skills, full_history, response_metadata)
+            
+            session.scores = json.dumps(all_scores)
+            next_action = "complete"
+            score_to_return = all_scores.get(skill.skill)
+        else:
+            # Just move to next skill, scoring happens at the very end
+            next_action = "next_skill"
+            session.current_skill_index = data.skill_index + 1
+            session.current_question_number = 1
+            score_to_return = None
+            
+        db.add(session)
+        db.commit()
+        
+        return {
+            "next_action": next_action,
+            "score": score_to_return
+        }
+    
+    session.current_question_number = data.question_number + 1
+    db.add(session)
+    db.commit()
+    return {"next_action": "next_question"}
+
+@app.get("/api/sessions/{session_id}/analysis")
+async def get_analysis(session_id: str, db: Session = Depends(get_session)):
+    session = db.get(SessionModel, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    if not session.scores:
+        return {"error": "Assessment not complete"}
+    
+    scores = json.loads(session.scores)
+    skills = [Skill(**s) for s in json.loads(session.skills)]
+    
+    # 1. Calculate JD Match Score (Weighted Average)
+    weights = {"critical": 3, "important": 2, "nice-to-have": 1}
+    total_weighted_score = 0
+    total_weight = 0
+    
+    for skill_obj in skills:
+        skill_name = skill_obj.skill
+        weight = weights.get(skill_obj.importance, 1)
+        score_val = scores.get(skill_name, {}).get("score", 0)
+        
+        total_weighted_score += score_val * weight
+        total_weight += weight
+    
+    jd_match_score = int(total_weighted_score / total_weight) if total_weight > 0 else 0
+    
+    # 2. Determine Candidate Level
+    avg_score = sum(s.get("score", 0) for s in scores.values()) / len(scores) if scores else 0
+    if avg_score < 40:
+        candidate_level = "Junior"
+    elif avg_score < 60:
+        candidate_level = "Mid-level"
+    elif avg_score < 80:
+        candidate_level = "Senior"
+    else:
+        candidate_level = "Expert"
+        
+    # 3. Get AI Verdict from Groq
+    from agent.scorer import client as groq_client
+    
+    prompt = f"""
+    Based on the following skill assessment results for a candidate, provide a one-sentence AI verdict.
+    The verdict should be concise and mention key strengths or critical gaps relative to the role.
+    
+    JD Match Score: {jd_match_score}%
+    Candidate Level: {candidate_level}
+    Skill Scores: {json.dumps(scores)}
+    
+    Example verdict: "Strong frontend profile but critical DevOps gaps suggest mid-level fit over the senior role advertised."
+    """
+    
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=100,
+            temperature=0.7
+        )
+        ai_verdict = response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"Error getting AI verdict: {e}")
+        ai_verdict = f"Candidate shows {candidate_level} proficiency with a {jd_match_score}% overall JD match."
+
+    return {
+        "scores": scores,
+        "jd_match_score": jd_match_score,
+        "ai_verdict": ai_verdict,
+        "candidate_level": candidate_level
+    }
+
+@app.get("/api/recruiter/candidates")
+async def get_recruiter_candidates(db: Session = Depends(get_session)):
+    """
+    Returns a list of all candidates who have completed their assessment.
+    """
+    statement = select(SessionModel).where(SessionModel.status == "complete")
+    results = db.exec(statement).all()
+    
+    candidates = []
+    for session in results:
+        # Parse candidate name (first line of resume)
+        resume_lines = session.resume.strip().split('\n')
+        candidate_name = resume_lines[0] if resume_lines else "Unknown Candidate"
+        
+        scores = json.loads(session.scores) if session.scores else {}
+        skills = [Skill(**s) for s in json.loads(session.skills)]
+        
+        # Calculate scores and metrics
+        weights = {"critical": 3, "important": 2, "nice-to-have": 1}
+        total_weighted_score = 0
+        total_weight = 0
+        overall_score_sum = 0
+        
+        # Top Gap: lowest scoring critical skill
+        critical_skills_scores = []
+        
+        # Confidence avg: most common confidence signal
+        confidence_signals = []
+        ai_suspicions = []
+        
+        skills_summary = []
+        
+        for skill_obj in skills:
+            skill_name = skill_obj.skill
+            weight = weights.get(skill_obj.importance, 1)
+            score_data = scores.get(skill_name, {})
+            score_val = score_data.get("score", 0)
+            conf_signal = score_data.get("confidence_signal", "genuine")
+            ai_suspicion = score_data.get("ai_suspicion", "low")
+            
+            total_weighted_score += score_val * weight
+            total_weight += weight
+            overall_score_sum += score_val
+            
+            if skill_obj.importance == "critical":
+                critical_skills_scores.append((skill_name, score_val))
+            
+            confidence_signals.append(conf_signal)
+            ai_suspicions.append(ai_suspicion)
+            skills_summary.append({
+                "skill": skill_name,
+                "score": score_val,
+                "confidence_signal": conf_signal,
+                "ai_suspicion": ai_suspicion
+            })
+            
+        # Calculate overall suspicion
+        if "high" in ai_suspicions:
+            overall_suspicion = "high"
+        elif "medium" in ai_suspicions:
+            overall_suspicion = "medium"
+        else:
+            overall_suspicion = "low"
+
+        jd_match_score = int(total_weighted_score / total_weight) if total_weight > 0 else 0
+        overall_score = int(overall_score_sum / len(skills)) if skills else 0
+        
+        # Find top gap
+        top_gap = "None"
+        if critical_skills_scores:
+            critical_skills_scores.sort(key=lambda x: x[1])
+            top_gap = critical_skills_scores[0][0]
+            
+        # Find most common confidence signal
+        from collections import Counter
+        conf_counts = Counter(confidence_signals)
+        confidence_avg = conf_counts.most_common(1)[0][0] if confidence_signals else "genuine"
+        
+        candidates.append({
+            "session_id": session.id,
+            "candidate_name": candidate_name,
+            "overall_score": overall_score,
+            "jd_match_score": jd_match_score,
+            "top_gap": top_gap,
+            "confidence_avg": confidence_avg,
+            "ai_suspicion": overall_suspicion,
+            "assessed_at": session.created_at.isoformat(),
+            "skills_summary": skills_summary
+        })
+        
+    # Sort by JD match score descending by default
+    candidates.sort(key=lambda x: x["jd_match_score"], reverse=True)
+    
+    return candidates
+
+@app.get("/api/recruiter/compare")
+async def compare_candidates(session_ids: str, db: Session = Depends(get_session)):
+    """
+    Compares multiple candidates side-by-side.
+    """
+    ids = session_ids.split(",")
+    results = []
+    
+    all_skills_set = set()
+    
+    for sid in ids:
+        session = db.get(SessionModel, sid)
+        if not session:
+            continue
+            
+        resume_lines = session.resume.strip().split('\n')
+        candidate_name = resume_lines[0] if resume_lines else "Unknown Candidate"
+        
+        scores = json.loads(session.scores) if session.scores else {}
+        skills_data = json.loads(session.skills)
+        
+        # Get overall metrics from previous logic
+        # For simplicity, we'll re-calculate or fetch from session if we stored them
+        # Let's re-calculate to be safe
+        weights = {"critical": 3, "important": 2, "nice-to-have": 1}
+        total_weighted_score = 0
+        total_weight = 0
+        confidence_signals = []
+        ai_suspicions = []
+        
+        candidate_skills = {}
+        for s in skills_data:
+            skill_name = s['skill']
+            all_skills_set.add(skill_name)
+            
+            score_data = scores.get(skill_name, {})
+            score_val = score_data.get("score", 0)
+            conf_signal = score_data.get("confidence_signal", "genuine")
+            ai_suspicion = score_data.get("ai_suspicion", "low")
+            
+            weight = weights.get(s['importance'], 1)
+            total_weighted_score += score_val * weight
+            total_weight += weight
+            confidence_signals.append(conf_signal)
+            ai_suspicions.append(ai_suspicion)
+            
+            candidate_skills[skill_name] = {
+                "score": score_val,
+                "level": score_data.get("level", "Beginner")
+            }
+            
+        jd_match_score = int(total_weighted_score / total_weight) if total_weight > 0 else 0
+        
+        from collections import Counter
+        conf_avg = Counter(confidence_signals).most_common(1)[0][0] if confidence_signals else "genuine"
+        
+        if "high" in ai_suspicions:
+            suspicion_avg = "high"
+        elif "medium" in ai_suspicions:
+            suspicion_avg = "medium"
+        else:
+            suspicion_avg = "low"
+            
+        results.append({
+            "session_id": sid,
+            "name": candidate_name,
+            "jd_match": jd_match_score,
+            "confidence": conf_avg,
+            "ai_suspicion": suspicion_avg,
+            "skills": candidate_skills
+        })
+        
+    if len(results) < 2:
+        return {"error": "Need at least 2 candidates to compare"}
+        
+    # Generate AI Comparison Verdict
+    comparison_context = json.dumps(results)
+    prompt = f"""
+    Compare these candidates for the role. Provide a ONE-LINE verdict explaining who is stronger and why.
+    Candidates: {comparison_context}
+    
+    Example: "Jane is stronger due to higher proficiency in critical React and Node.js skills, despite Alex's lower AI suspicion."
+    """
+    
+    from agent.scorer import client as groq_client
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=100,
+            temperature=0.7
+        )
+        verdict = response.choices[0].message.content.strip()
+    except Exception as e:
+        verdict = f"Comparison complete: {results[0]['name']} and {results[1]['name']} evaluated."
+
+    return {
+        "candidates": results,
+        "all_skills": sorted(list(all_skills_set)),
+        "verdict": verdict
+    }
+async def get_learning_plan(session_id: str, db: Session = Depends(get_session)):
+    session = db.get(SessionModel, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    async def event_generator():
+        skills = [Skill(**s) for s in json.loads(session.skills)]
+        scores = {k: SkillScore(**v) for k, v in json.loads(session.scores).items()}
+        
+        result = await generate_learning_plan(skills, scores, session.resume)
+        
+        # Send context and summary first
+        yield f"data: {json.dumps({'type': 'metadata', 'context': result['context'], 'summary': result['summary']})}\n\n"
+        
+        for item in result['plan']:
+            yield f"data: {json.dumps({'type': 'item', 'data': item})}\n\n"
+            await asyncio.sleep(0.1)
+        
+        yield "data: {\"type\": \"done\"}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+@app.get("/api/sessions/{session_id}/plan/pdf")
+async def get_plan_pdf(session_id: str, db: Session = Depends(get_session)):
+    session = db.get(SessionModel, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    if not session.scores:
+        raise HTTPException(status_code=400, detail="Assessment not complete")
+
+    skills = [Skill(**s) for s in json.loads(session.skills)]
+    scores = {k: SkillScore(**v) for k, v in json.loads(session.scores).items()}
+    result = await generate_learning_plan(skills, scores, session.resume)
+    plan = [LearningItem(**item) for item in result['plan']]
+
+    buffer = BytesIO()
+    p = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+
+    # Title
+    p.setFont("Helvetica-Bold", 16)
+    p.drawString(100, height - 50, "SkillLens: Personalized Learning Plan")
+    
+    # Session Details
+    p.setFont("Helvetica", 10)
+    p.drawString(100, height - 80, f"Session ID: {session.id}")
+    p.drawString(100, height - 95, f"Date: {session.created_at.strftime('%Y-%m-%d')}")
+
+    y = height - 130
+    # Scores Summary
+    p.setFont("Helvetica-Bold", 12)
+    p.drawString(100, y, "Skill Assessment Summary")
+    y -= 20
+    p.setFont("Helvetica", 10)
+    for skill_name, score in scores.items():
+        p.drawString(120, y, f"- {skill_name}: {score.score}/100 ({score.level})")
+        y -= 15
+        if y < 50:
+            p.showPage()
+            y = height - 50
+
+    y -= 20
+    # Learning Plan
+    p.setFont("Helvetica-Bold", 12)
+    p.drawString(100, y, "Learning Roadmap")
+    y -= 20
+    
+    for item in plan:
+        p.setFont("Helvetica-Bold", 11)
+        p.drawString(100, y, f"Skill: {item.skill} (Priority: P{item.priority})")
+        y -= 15
+        p.setFont("Helvetica", 10)
+        p.drawString(120, y, f"Time: {item.time_weeks} weeks")
+        y -= 15
+        
+        p.drawString(120, y, "Weekly Breakdown:")
+        y -= 15
+        for week in item.week_by_week:
+            p.drawString(140, y, f"- {week}")
+            y -= 15
+            if y < 50:
+                p.showPage()
+                y = height - 50
+        
+        y -= 5
+        p.drawString(120, y, "Recommended Resources:")
+        y -= 15
+        for res in item.resources:
+            p.drawString(140, y, f"- [{res.type.upper()}] {res.title}: {res.url}")
+            y -= 15
+            if y < 50:
+                p.showPage()
+                y = height - 50
+        
+        y -= 20
+        if y < 100:
+            p.showPage()
+            y = height - 50
+
+    # p.save() # Remove or comment out the extra p.save() if it exists twice
+    p.save()
+
+    buffer.seek(0)
+    pdf_content = buffer.getvalue()
+    buffer.close()
+    
+    return Response(
+        content=pdf_content, 
+        media_type="application/pdf", 
+        headers={
+            "Content-Disposition": f"attachment; filename=learning_plan_{session_id}.pdf",
+            "Access-Control-Expose-Headers": "Content-Disposition"
+        }
+    )
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
