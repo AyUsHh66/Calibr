@@ -83,7 +83,7 @@ async def health_check():
     
     return {
         "status": "healthy",
-        "version": "1.0.1-pdf-debug",
+        "version": "1.0.2-flexible-parsing",
         "time": time.time(),
         "database": settings.DATABASE_URL.split(":")[0],
         "db_file_exists": db_file_exists,
@@ -611,14 +611,17 @@ async def get_learning_plan(session_id: str, db: Session = Depends(get_session))
         try:
             skills = [Skill(**s) for s in json.loads(session.skills)]
             scores = {k: SkillScore(**v) for k, v in json.loads(session.scores).items()}
-            
             result = await generate_learning_plan(skills, scores, session.resume)
+            
+            raw_plan = result.get('plan', result.get('learning_plan', result.get('items', [])))
+            plan = [LearningItem(**parse_learning_item(item)) for item in raw_plan]
             
             # Send context and summary
             yield f"data: {json.dumps({'type': 'metadata', 'context': result['context'], 'summary': result['summary']})}\n\n"
             
-            for item in result['plan']:
-                yield f"data: {json.dumps({'type': 'item', 'data': item})}\n\n"
+            for item in plan:
+                # item is already a LearningItem object, so use .dict() for serialization
+                yield f"data: {json.dumps({'type': 'item', 'data': item.dict()})}\n\n"
                 await asyncio.sleep(0.1)
             
             yield "data: {\"type\": \"done\"}\n\n"
@@ -635,6 +638,44 @@ async def get_learning_plan(session_id: str, db: Session = Depends(get_session))
             "X-Accel-Buffering": "no"
         }
     )
+
+def parse_learning_item(item: dict) -> dict:
+    """Flexibly parse learning item regardless of field names."""
+    return {
+        "skill": item.get("skill", "Unknown Skill"),
+        "priority": item.get("priority", item.get("rank", item.get("order", 1))),
+        "time_weeks": (
+            item.get("time_weeks") or 
+            item.get("duration_weeks") or 
+            item.get("weeks") or 
+            item.get("estimated_weeks") or 
+            (int(str(item.get("time_estimate", "4")).split()[0]) if item.get("time_estimate") else 4)
+        ),
+        "why_adjacent": (
+            item.get("why_adjacent") or 
+            item.get("rationale") or 
+            item.get("reason") or 
+            item.get("justification") or 
+            "Builds on existing knowledge"
+        ),
+        "week_by_week": (
+            item.get("week_by_week") or 
+            item.get("weekly_plan") or 
+            item.get("milestones") or 
+            item.get("weeks_breakdown") or 
+            [
+                f"Week 1-2: Learn {item.get('skill', 'this skill')} fundamentals",
+                f"Week 3-4: Build a hands-on project",
+                f"Week 5+: Apply in real scenarios"
+            ]
+        ),
+        "resources": (
+            item.get("resources") or 
+            item.get("resource_list") or 
+            item.get("learning_resources") or 
+            []
+        )
+    }
 
 def generate_pdf(session) -> bytes:
     buffer = io.BytesIO()

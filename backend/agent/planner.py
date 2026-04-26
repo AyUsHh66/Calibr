@@ -41,6 +41,44 @@ def get_gap_skills(skills: List[Skill], scores: Dict[str, SkillScore]):
     print(f"Gap skills selected: {[(s.skill, find_score(s.skill, scores).score if find_score(s.skill, scores) else 'NO SCORE') for s in gap_skills]}")
     return gap_skills
 
+def parse_learning_item(item: dict) -> dict:
+    """Flexibly parse learning item regardless of field names."""
+    return {
+        "skill": item.get("skill", "Unknown Skill"),
+        "priority": item.get("priority", item.get("rank", item.get("order", 1))),
+        "time_weeks": (
+            item.get("time_weeks") or 
+            item.get("duration_weeks") or 
+            item.get("weeks") or 
+            item.get("estimated_weeks") or 
+            (int(str(item.get("time_estimate", "4")).split()[0]) if item.get("time_estimate") else 4)
+        ),
+        "why_adjacent": (
+            item.get("why_adjacent") or 
+            item.get("rationale") or 
+            item.get("reason") or 
+            item.get("justification") or 
+            "Builds on existing knowledge"
+        ),
+        "week_by_week": (
+            item.get("week_by_week") or 
+            item.get("weekly_plan") or 
+            item.get("milestones") or 
+            item.get("weeks_breakdown") or 
+            [
+                f"Week 1-2: Learn {item.get('skill', 'this skill')} fundamentals",
+                f"Week 3-4: Build a hands-on project",
+                f"Week 5+: Apply in real scenarios"
+            ]
+        ),
+        "resources": (
+            item.get("resources") or 
+            item.get("resource_list") or 
+            item.get("learning_resources") or 
+            []
+        )
+    }
+
 async def generate_learning_plan(
     skills: List[Skill],
     scores: Dict[str, SkillScore],
@@ -148,18 +186,10 @@ async def generate_learning_plan(
         )
         
         plan_data = json.loads(response.choices[0].message.content)
-        plan = plan_data.get("plan", [])
+        raw_plan = plan_data.get("plan", plan_data.get("learning_plan", plan_data.get("items", [])))
         
-        # Post-processing: ensure required fields exist
-        for item in plan:
-            if 'week_by_week' not in item or not item['week_by_week']:
-                item['week_by_week'] = [
-                    f"Week 1-2: Learn {item.get('skill', 'this skill')} fundamentals",
-                    f"Week 3-4: Build a project using {item.get('skill', 'this skill')}",
-                    f"Week 5+: Apply to real work scenarios"
-                ]
-            if 'resources' not in item or not item['resources']:
-                item['resources'] = []
+        # Flexibly parse and validate with LearningItem model
+        plan = [LearningItem(**parse_learning_item(item)).dict() for item in raw_plan]
                 
         return {
             "plan": plan,
