@@ -65,6 +65,7 @@ async def api_root():
     }
 
 @app.get("/api/health")
+@app.get("/health")
 async def health_check():
     import os
     import time
