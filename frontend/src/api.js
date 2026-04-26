@@ -1,16 +1,31 @@
 const getApiBaseUrl = () => {
-  if (import.meta.env.VITE_API_URL) {
-    return import.meta.env.VITE_API_URL;
+  let url = import.meta.env.VITE_API_URL || '';
+  // Remove trailing slash if it exists
+  if (url.endsWith('/')) {
+    url = url.slice(0, -1);
   }
-  // In dev (Vite) and prod (Nginx), we use the /api proxy
-  return '';
+  return url;
 };
 
 export const API_BASE_URL = getApiBaseUrl();
 
+// Debug helper to log requests
+const fetchWithLogging = async (path, options = {}) => {
+  const url = `${API_BASE_URL}${path}`;
+  console.log(`[API Request] ${options.method || 'GET'} ${url}`);
+  try {
+    const response = await fetch(url, options);
+    console.log(`[API Response] ${response.status} ${url}`);
+    return response;
+  } catch (err) {
+    console.error(`[API Error] ${url}`, err);
+    throw err;
+  }
+};
+
 export const createSession = async (jd, resume) => {
   try {
-    const response = await fetch(`${API_BASE_URL}/api/sessions`, {
+    const response = await fetchWithLogging('/api/sessions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ jd, resume }),
@@ -38,7 +53,7 @@ export const uploadFile = async (file) => {
   const formData = new FormData();
   formData.append('file', file);
   
-  const response = await fetch(`${API_BASE_URL}/api/upload`, {
+  const response = await fetchWithLogging('/api/upload', {
     method: 'POST',
     body: formData,
   });
@@ -47,13 +62,13 @@ export const uploadFile = async (file) => {
 };
 
 export const getQuestion = async (sessionId, skillIndex, questionNumber) => {
-  const response = await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/question?skill_index=${skillIndex}&question_number=${questionNumber}`);
+  const response = await fetchWithLogging(`/api/sessions/${sessionId}/question?skill_index=${skillIndex}&question_number=${questionNumber}`);
   if (!response.ok) throw new Error('Failed to fetch question');
   return response.json();
 };
 
 export const submitAnswer = async (sessionId, skillIndex, questionNumber, answer, conversationHistory, responseTime) => {
-  const response = await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/answer`, {
+  const response = await fetchWithLogging(`/api/sessions/${sessionId}/answer`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -69,19 +84,19 @@ export const submitAnswer = async (sessionId, skillIndex, questionNumber, answer
 };
 
 export const getAnalysis = async (sessionId) => {
-  const response = await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/analysis`);
+  const response = await fetchWithLogging(`/api/sessions/${sessionId}/analysis`);
   if (!response.ok) throw new Error('Failed to fetch analysis');
   return response.json();
 };
 
 export const getSession = async (sessionId) => {
-  const response = await fetch(`${API_BASE_URL}/api/sessions/${sessionId}`);
+  const response = await fetchWithLogging(`/api/sessions/${sessionId}`);
   if (!response.ok) throw new Error('Failed to fetch session');
   return response.json();
 };
 
 export const deleteSession = async (sessionId) => {
-  const response = await fetch(`${API_BASE_URL}/api/sessions/${sessionId}`, {
+  const response = await fetchWithLogging(`/api/sessions/${sessionId}`, {
     method: 'DELETE',
   });
   if (!response.ok) throw new Error('Failed to delete session');
@@ -89,13 +104,13 @@ export const deleteSession = async (sessionId) => {
 };
 
 export const getRecruiterCandidates = async () => {
-  const response = await fetch(`${API_BASE_URL}/api/recruiter/candidates`);
+  const response = await fetchWithLogging('/api/recruiter/candidates');
   if (!response.ok) throw new Error('Failed to fetch recruiter candidates');
   return response.json();
 };
 
 export const compareCandidates = async (sessionIds) => {
-  const response = await fetch(`${API_BASE_URL}/api/recruiter/compare?session_ids=${sessionIds.join(',')}`);
+  const response = await fetchWithLogging(`/api/recruiter/compare?session_ids=${sessionIds.join(',')}`);
   if (!response.ok) throw new Error('Failed to compare candidates');
   return response.json();
 };
