@@ -14,11 +14,17 @@ const LearningPlan = ({ sessionId, onBack }) => {
     eventSource.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        if (data.type === 'metadata') {
+        if (data.type === 'status') {
+          setSummary(data.message);
+        } else if (data.type === 'metadata') {
           setPlanContext(data.context);
           setSummary(data.summary);
         } else if (data.type === 'item') {
           setItems(prev => [...prev, data.data]);
+        } else if (data.type === 'error') {
+          setError(data.message);
+          setIsGenerating(false);
+          eventSource.close();
         } else if (data.type === 'done') {
           setIsGenerating(false);
           eventSource.close();

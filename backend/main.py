@@ -91,16 +91,6 @@ async def health_check():
         "cors_origins": origins
     }
 
-# Catch-all for undefined /api routes to help debug 404s
-@app.api_route("/api/{path_name:path}", methods=["GET", "POST", "PUT", "DELETE"])
-async def catch_all_api(request: Request, path_name: str):
-    print(f"DEBUG: 404 Attempted access to undefined route: {request.method} /api/{path_name}")
-    return Response(
-        content=json.dumps({"detail": f"Route /api/{path_name} not found on this server"}),
-        status_code=404,
-        media_type="application/json"
-    )
-
 @app.on_event("startup")
 def on_startup():
     try:
@@ -611,30 +601,35 @@ async def get_learning_plan(session_id: str, db: Session = Depends(get_session))
         raise HTTPException(status_code=404, detail="Session not found")
     
     async def event_generator():
-        skills = [Skill(**s) for s in json.loads(session.skills)]
-        scores = {k: SkillScore(**v) for k, v in json.loads(session.scores).items()}
+        # Yield a heartbeat or initial status to keep connection alive
+        yield f"data: {json.dumps({'type': 'status', 'message': 'Generating your personalized roadmap...'})}\n\n"
         
-        result = await generate_learning_plan(skills, scores, session.resume)
-        
-        # Send context and summary first
-        yield f"data: {json.dumps({'type': 'metadata', 'context': result['context'], 'summary': result['summary']})}\n\n"
-        
-        for item in result['plan']:
-            yield f"data: {json.dumps({'type': 'item', 'data': item})}\n\n"
-            await asyncio.sleep(0.1)
-        
-        yield "data: {\"type\": \"done\"}\n\n"
+        try:
+            skills = [Skill(**s) for s in json.loads(session.skills)]
+            scores = {k: SkillScore(**v) for k, v in json.loads(session.scores).items()}
+            
+            result = await generate_learning_plan(skills, scores, session.resume)
+            
+            # Send context and summary
+            yield f"data: {json.dumps({'type': 'metadata', 'context': result['context'], 'summary': result['summary']})}\n\n"
+            
+            for item in result['plan']:
+                yield f"data: {json.dumps({'type': 'item', 'data': item})}\n\n"
+                await asyncio.sleep(0.1)
+            
+            yield "data: {\"type\": \"done\"}\n\n"
+        except Exception as e:
+            print(f"SSE Error: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
-
-# Catch-all for undefined /api routes to help debug 404s
-@app.api_route("/api/{path_name:path}", methods=["GET", "POST", "PUT", "DELETE"])
-async def catch_all_api(request: Request, path_name: str):
-    print(f"DEBUG: 404 Attempted access to undefined route: {request.method} /api/{path_name}")
-    return Response(
-        content=json.dumps({"detail": f"Route /api/{path_name} not found on this server"}),
-        status_code=404,
-        media_type="application/json"
+    return StreamingResponse(
+        event_generator(), 
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
     )
 
 @app.get("/api/sessions/{session_id}/plan/pdf")
@@ -657,7 +652,7 @@ async def get_plan_pdf(session_id: str, db: Session = Depends(get_session)):
 
     # Title
     p.setFont("Helvetica-Bold", 16)
-    p.drawString(100, height - 50, "SkillLens: Personalized Learning Plan")
+    p.drawString(100, height - 50, "Calibr: Personalized Learning Plan")
     
     # Session Details
     p.setFont("Helvetica", 10)
@@ -728,6 +723,18 @@ async def catch_all_api(request: Request, path_name: str):
         status_code=404,
         media_type="application/json"
     )
+
+class LearningResource(BaseModel):
+    title: str
+    url: str
+    type: str
+
+class LearningItem(BaseModel):
+    skill: str
+    priority: int
+    time_weeks: int
+    week_by_week: List[str]
+    resources: List[LearningResource]
 
 if __name__ == "__main__":
     import uvicorn
