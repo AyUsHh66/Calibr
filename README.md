@@ -1,5 +1,7 @@
 # Calibr ◈ AI Skill Assessment Agent 
 
+[**Live Demo**](https://calibr-ai.vercel.app) | [**GitHub Repo**](https://github.com/AyUsHh66/Calibr)
+
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.111-009688?style=flat&logo=fastapi)](https://fastapi.tiangolo.com) 
 [![React](https://img.shields.io/badge/React-18-61DAFB?style=flat&logo=react)](https://react.dev) 
 [![Groq](https://img.shields.io/badge/Groq-LLaMA_3.3_70b-orange?style=flat)](https://groq.com) 
@@ -30,7 +32,7 @@ Calibr is an AI agent that:
 
 ### Setup 
 ```bash
-git clone https://github.com/YOURNAME/calibr.git
+git clone https://github.com/AyUsHh66/calibr.git
 cd calibr 
 cp backend/.env.example backend/.env 
 ```
